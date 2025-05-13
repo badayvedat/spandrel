@@ -201,6 +201,7 @@ class WindowAttention(nn.Module):
         else:
             attn = self.softmax(attn)
 
+        attn = attn.to(v.dtype, non_blocking=True)
         x = (attn @ v).transpose(1, 2).reshape(b_, n, c)
         x = self.proj(x)
         return x
