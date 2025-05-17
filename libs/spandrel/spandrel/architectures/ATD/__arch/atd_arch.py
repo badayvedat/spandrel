@@ -20,11 +20,7 @@ from spandrel.util.timm import to_2tuple, trunc_normal_
 
 # Shuffle operation for Categorization and UnCategorization operations.
 def index_reverse(index):
-    index_r = torch.zeros_like(index)
-    ind = torch.arange(0, index.shape[-1]).to(index.device)
-    for i in range(index.shape[0]):
-        index_r[i, index[i, :]] = ind
-    return index_r
+    return torch.argsort(index, dim=-1)
 
 
 def feature_shuffle(x, index):
@@ -62,10 +58,9 @@ class dwconv(nn.Module):
         x = (
             x.transpose(1, 2)
             .view(x.shape[0], self.hidden_features, x_size[0], x_size[1])
-            .contiguous()
         )  # b Ph*Pw c
         x = self.depthwise_conv(x)
-        x = x.flatten(2).transpose(1, 2).contiguous()
+        x = x.flatten(2).transpose(1, 2)
         return x
 
 
@@ -106,7 +101,7 @@ def window_partition(x, window_size):
     b, h, w, c = x.shape
     x = x.view(b, h // window_size, window_size, w // window_size, window_size, c)
     windows = (
-        x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, c)
+        x.permute(0, 1, 3, 2, 4, 5).reshape(-1, window_size, window_size, c)
     )
     return windows
 
@@ -126,7 +121,7 @@ def window_reverse(windows, window_size, h, w):
     x = windows.view(
         b, h // window_size, w // window_size, window_size, window_size, -1
     )
-    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(b, h, w, -1)
+    x = x.permute(0, 1, 3, 2, 4, 5).reshape(b, h, w, -1)
     return x
 
 
@@ -188,7 +183,7 @@ class WindowAttention(nn.Module):
         )  # Wh*Ww,Wh*Ww,nH
         relative_position_bias = relative_position_bias.permute(
             2, 0, 1
-        ).contiguous()  # nH, Wh*Ww, Wh*Ww
+        )  # nH, Wh*Ww, Wh*Ww
         attn = attn + relative_position_bias.unsqueeze(0)
 
         if mask is not None:
@@ -309,6 +304,8 @@ class AC_MSA(nn.Module):
         )
         self.softmax = nn.Softmax(dim=-1)
 
+        self.max_logit_scale = torch.log(torch.tensor(1.0 / 0.01)).to("cuda")
+
     def forward(self, qkv, sim, x_size):
         """
         Args:
@@ -327,7 +324,7 @@ class AC_MSA(nn.Module):
         tk_id = torch.argmax(sim, dim=-1, keepdim=False)
         # sort features by type
         _x_sort_values, x_sort_indices = torch.sort(tk_id, dim=-1, stable=False)
-        x_sort_indices_reverse = index_reverse(x_sort_indices)
+
         shuffled_qkv = feature_shuffle(qkv, x_sort_indices)  # b, n, c3
         pad_n = ng * gs - n
         paded_qkv = torch.cat(
@@ -345,7 +342,7 @@ class AC_MSA(nn.Module):
         attn = q @ k.transpose(-2, -1)  # b, ng, nh, gs, gs
 
         logit_scale = torch.clamp(
-            self.logit_scale, max=torch.log(torch.tensor(1.0 / 0.01)).to(qkv.device)
+            self.logit_scale, max=self.max_logit_scale#torch.log(torch.tensor(1.0 / 0.01)).to(qkv.device), non_blocking=True)
         ).exp()
         attn = attn * logit_scale
 
@@ -355,6 +352,7 @@ class AC_MSA(nn.Module):
         # Attn * V
         y = (attn @ v).permute(0, 1, 3, 2, 4).reshape(b, n + pad_n, c)[:, :n, :]
 
+        x_sort_indices_reverse = index_reverse(x_sort_indices)
         x = feature_shuffle(y, x_sort_indices_reverse)
         x = self.proj(x)
 
@@ -1111,7 +1109,7 @@ class ATD(nn.Module):
         )  # 2, Wh*Ww, Wh*Ww
         relative_coords = relative_coords.permute(
             1, 2, 0
-        ).contiguous()  # Wh*Ww, Wh*Ww, 2
+        )  # Wh*Ww, Wh*Ww, 2
         relative_coords[:, :, 0] += self.window_size - 1  # shift to start from 0
         relative_coords[:, :, 1] += self.window_size - 1
         relative_coords[:, :, 0] *= 2 * self.window_size - 1
@@ -1121,7 +1119,7 @@ class ATD(nn.Module):
     def calculate_mask(self, x_size):
         # calculate attention mask for SW-MSA
         h, w = x_size
-        img_mask = torch.zeros((1, h, w, 1))  # 1 h w 1
+        img_mask = torch.zeros((1, h, w, 1), device="cuda")  # 1 h w 1
         h_slices = (
             slice(0, -self.window_size),
             slice(-self.window_size, -(self.window_size // 2)),
@@ -1141,11 +1139,9 @@ class ATD(nn.Module):
         mask_windows = window_partition(
             img_mask, self.window_size
         )  # nw, window_size, window_size, 1
-        mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
-        attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-        attn_mask = attn_mask.masked_fill(attn_mask != 0, -100.0).masked_fill(
-            attn_mask == 0, 0.0
-        )
+        mask_windows = mask_windows.reshape(-1, self.window_size * self.window_size)
+        attn_mask = mask_windows.unsqueeze(1) != mask_windows.unsqueeze(2)
+        attn_mask.float().mul_(-100.0)
 
         return attn_mask
 
