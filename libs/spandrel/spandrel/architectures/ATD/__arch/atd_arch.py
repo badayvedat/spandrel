@@ -1147,6 +1147,7 @@ class ATD(nn.Module):
 
     def forward(self, x):
         # padding
+        x = x.to("cuda")
         h_ori, w_ori = x.size()[-2], x.size()[-1]
         mod = self.window_size
         h_pad = ((h_ori + mod - 1) // mod) * mod - h_ori
