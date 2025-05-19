@@ -947,6 +947,7 @@ class ATD(nn.Module):
             self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
         else:
             self.mean = torch.zeros(1, 1, 1, 1)
+        self.mean = self.mean.to("cuda")
         self.upscale = upscale
         self.upsampler = upsampler
 
@@ -1155,7 +1156,7 @@ class ATD(nn.Module):
         h, w = h_ori + h_pad, w_ori + w_pad
         x = torch.cat([x, torch.flip(x, [2])], 2)[:, :, :h, :]
         x = torch.cat([x, torch.flip(x, [3])], 3)[:, :, :, :w]
-        mean_tensor = self.mean.to(x.device, x.dtype)
+        mean_tensor = self.mean.to(x.dtype)
         # rgb norm
         if self.is_norm:
             x = (x - mean_tensor) * self.img_range
