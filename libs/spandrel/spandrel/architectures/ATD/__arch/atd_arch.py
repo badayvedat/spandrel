@@ -55,9 +55,8 @@ class dwconv(nn.Module):
         self.hidden_features = hidden_features
 
     def forward(self, x, x_size):
-        x = (
-            x.transpose(1, 2)
-            .view(x.shape[0], self.hidden_features, x_size[0], x_size[1])
+        x = x.transpose(1, 2).view(
+            x.shape[0], self.hidden_features, x_size[0], x_size[1]
         )  # b Ph*Pw c
         x = self.depthwise_conv(x)
         x = x.flatten(2).transpose(1, 2)
@@ -100,9 +99,7 @@ def window_partition(x, window_size):
     """
     b, h, w, c = x.shape
     x = x.view(b, h // window_size, window_size, w // window_size, window_size, c)
-    windows = (
-        x.permute(0, 1, 3, 2, 4, 5).reshape(-1, window_size, window_size, c)
-    )
+    windows = x.permute(0, 1, 3, 2, 4, 5).reshape(-1, window_size, window_size, c)
     return windows
 
 
@@ -342,7 +339,8 @@ class AC_MSA(nn.Module):
         attn = q @ k.transpose(-2, -1)  # b, ng, nh, gs, gs
 
         logit_scale = torch.clamp(
-            self.logit_scale, max=self.max_logit_scale#torch.log(torch.tensor(1.0 / 0.01)).to(qkv.device), non_blocking=True)
+            self.logit_scale,
+            max=self.max_logit_scale,  # torch.log(torch.tensor(1.0 / 0.01)).to(qkv.device), non_blocking=True)
         ).exp()
         attn = attn * logit_scale
 
@@ -949,6 +947,7 @@ class ATD(nn.Module):
             self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
         else:
             self.mean = torch.zeros(1, 1, 1, 1)
+        self.mean = self.mean.to("cuda")
         self.upscale = upscale
         self.upsampler = upsampler
 
@@ -1107,9 +1106,7 @@ class ATD(nn.Module):
         relative_coords = (
             coords_flatten[:, :, None] - coords_flatten[:, None, :]
         )  # 2, Wh*Ww, Wh*Ww
-        relative_coords = relative_coords.permute(
-            1, 2, 0
-        )  # Wh*Ww, Wh*Ww, 2
+        relative_coords = relative_coords.permute(1, 2, 0)  # Wh*Ww, Wh*Ww, 2
         relative_coords[:, :, 0] += self.window_size - 1  # shift to start from 0
         relative_coords[:, :, 1] += self.window_size - 1
         relative_coords[:, :, 0] *= 2 * self.window_size - 1
@@ -1151,6 +1148,7 @@ class ATD(nn.Module):
 
     def forward(self, x):
         # padding
+        x = x.to("cuda")
         h_ori, w_ori = x.size()[-2], x.size()[-1]
         mod = self.window_size
         h_pad = ((h_ori + mod - 1) // mod) * mod - h_ori
@@ -1158,11 +1156,10 @@ class ATD(nn.Module):
         h, w = h_ori + h_pad, w_ori + w_pad
         x = torch.cat([x, torch.flip(x, [2])], 2)[:, :, :h, :]
         x = torch.cat([x, torch.flip(x, [3])], 3)[:, :, :, :w]
-
+        mean_tensor = self.mean.to(x.dtype)
         # rgb norm
         if self.is_norm:
-            self.mean = self.mean.type_as(x)
-            x = (x - self.mean) * self.img_range
+            x = (x - mean_tensor) * self.img_range
 
         attn_mask = self.calculate_mask([h, w]).to(x.device)
         params = {"attn_mask": attn_mask, "rpi_sa": self.relative_position_index_SA}
@@ -1197,7 +1194,7 @@ class ATD(nn.Module):
             x = x + self.conv_last(res)
 
         if self.is_norm:
-            x = x / self.img_range + self.mean
+            x = x / self.img_range + mean_tensor
 
         # unpadding
         x = x[..., : h_ori * self.upscale, : w_ori * self.upscale]
